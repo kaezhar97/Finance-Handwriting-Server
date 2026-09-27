@@ -6,7 +6,46 @@ import { recognizePage, buildImageContent } from '../lib/recognition.js';
 import { createHandler } from '../api/recognize.js';
 import { MASTER_PROMPT } from '../lib/prompt.js';
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/n6kAAAAASUVORK5CYII=';
-const page = amount => ({title:'January 2027',sections:[{heading:'Income',semanticKind:'income',groups:[{name:'',items:[{label:'Salary',amount,semanticKind:'income'}]}]}]});
+const page = amount => ({
+    title: 'January 2027',
+
+    titleRegion: {
+        x: 350,
+        y: 40,
+        width: 300,
+        height: 80
+    },
+
+    sections: [
+        {
+            heading: 'Income',
+            semanticKind: 'income',
+
+            groups: [
+                {
+                    name: '',
+
+                    items: [
+                        {
+                            label: 'Salary',
+                            amount,
+
+                            amountRegion: {
+                                x: 650,
+                                y: 250,
+                                width: 150,
+                                height: 60
+                            },
+
+                            semanticKind:
+                                'income'
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+});
 const clone = value => structuredClone(value);
 const request = {imageBase64:png};
 function fakeClient(documents) { const calls=[];return { calls, responses:{create:async(body,options)=>{calls.push({body,options});return {status:'completed',model:'actual-model-id',output_text:JSON.stringify(documents[calls.length-1] ?? documents[0])};}} }; }
@@ -35,6 +74,154 @@ test('reference image carries glyph-only instructions',()=>{const c=buildImageCo
 test('rate limit expires and bounds bursts',()=>{let now=0;const limit=createRateLimiter({now:()=>now,maximum:2});assert.equal(limit('a'),false);assert.equal(limit('a'),false);assert.equal(limit('a'),true);now=60000;assert.equal(limit('a'),false);});
 test('health does not need credentials or call OpenAI',async()=>{const res=response();await createHandler({clientProvider:()=>{throw Error('must not call');}})({method:'GET'},res);assert.equal(res.code,200);assert.equal(res.body.mode,'whole-page-consensus');});
 test('handler rejects methods malformed requests and excessive bursts',async()=>{for(const [req,code] of [[{method:'DELETE'},405],[{method:'POST',body:'bad'},400]]){const res=response();await createHandler({rateLimit:()=>false})(req,res);assert.equal(res.code,code);}const res=response();await createHandler({rateLimit:()=>true})({method:'POST'},res);assert.equal(res.code,429);assert.equal(res.headers['Retry-After'],'60');});
-test('handler returns successful contract',async()=>{const res=response();await createHandler({clientProvider:()=>fakeClient([page('420')]),rateLimit:()=>false})({method:'POST',body:request},res);assert.equal(res.code,200);assert.equal(res.body.provenance.schemaVersion,'financial-document-v1');});
+test(
+    'handler returns successful contract',
+    async () => {
+        const res =
+            response();
+
+        await createHandler({
+            clientProvider:
+                () =>
+                    fakeClient([
+                        page('420')
+                    ]),
+
+            rateLimit:
+                () => false
+        })(
+            {
+                method: 'POST',
+                body: request
+            },
+            res
+        );
+
+        assert.equal(
+            res.code,
+            200
+        );
+
+        assert.equal(
+            res.body.provenance
+                .schemaVersion,
+            'financial-document-v2'
+        );
+
+        assert.equal(
+            res.body.provenance
+                .promptVersion,
+            'whole-page-v2'
+        );
+    }
+);
 test('handler maps upstream limit without leaking error bodies',async()=>{const res=response();await createHandler({clientProvider:()=>({responses:{create:async()=>{throw Object.assign(new Error('secret image'),{status:429});}}}),rateLimit:()=>false})({method:'POST',body:request},res);assert.equal(res.code,429);assert.doesNotMatch(JSON.stringify(res.body),/secret/);});
 test('handler aborts timed-out reads',async()=>{const res=response();const client={responses:{create:async(_, {signal})=>new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(Object.assign(new Error('timeout'),{name:'AbortError'})),{once:true}))}};await createHandler({clientProvider:()=>client,timeoutMs:5,rateLimit:()=>false})({method:'POST',body:request},res);assert.equal(res.code,504);});
+test(
+    'new asset and liability semantic kinds are accepted',
+    () => {
+        const asset =
+            page('12000');
+
+        asset.sections[0]
+            .groups[0]
+            .items[0]
+            .semanticKind =
+                'asset_balance';
+
+        assert.equal(
+            validateDocument(asset),
+            asset
+        );
+
+        const liability =
+            page('285000');
+
+        liability.sections[0]
+            .groups[0]
+            .items[0]
+            .semanticKind =
+                'liability_balance';
+
+        assert.equal(
+            validateDocument(
+                liability
+            ),
+            liability
+        );
+    }
+);
+
+test(
+    'invalid normalized regions are rejected',
+    () => {
+        const invalid =
+            page('420');
+
+        invalid.sections[0]
+            .groups[0]
+            .items[0]
+            .amountRegion =
+                {
+                    x: 950,
+                    y: 250,
+                    width: 100,
+                    height: 50
+                };
+
+        assert.throws(
+            () =>
+                validateDocument(
+                    invalid
+                )
+        );
+    }
+);
+
+test(
+    'consensus uses median amount region',
+    () => {
+        const first =
+            page('420');
+
+        const second =
+            page('420');
+
+        const third =
+            page('420');
+
+        first.sections[0]
+            .groups[0]
+            .items[0]
+            .amountRegion.x =
+                600;
+
+        second.sections[0]
+            .groups[0]
+            .items[0]
+            .amountRegion.x =
+                650;
+
+        third.sections[0]
+            .groups[0]
+            .items[0]
+            .amountRegion.x =
+                700;
+
+        const result =
+            mergeAlignedPasses([
+                first,
+                second,
+                third
+            ]);
+
+        assert.equal(
+            result.document
+                .sections[0]
+                .groups[0]
+                .items[0]
+                .amountRegion.x,
+            650
+        );
+    }
+);
