@@ -58,14 +58,14 @@ test('profile is bounded and reduced to explicit correction fields',()=>{const p
 test('reference optional and validated',()=>{assert.equal(validateRequest({...request,handwritingReferenceBase64:png}).handwritingReferenceBase64,png);assert.throws(()=>validateRequest({...request,handwritingReferenceBase64:'bad'}));});
 test('amounts preserve zero, decimals, negatives, trailing zero and long balance',()=>{for(const v of ['0','-35.42','8500','1000.00','208300','999999999999.99'])assert.equal(validateAmount(v),true);});
 test('invalid amounts are rejected without cleanup',()=>{for(const v of ['1,000','1000 1000','1.234','1e4','NaN','1000000000000','',null])assert.equal(validateAmount(v),false);});
-test('arbitrary labels and empty documents are valid',()=>{const p=page('90');p.sections[0].heading='DOG';p.sections[0].groups[0].items[0].label='Vet';assert.equal(validateDocument(p),p);assert.doesNotThrow(()=>validateDocument({title:'',sections:[]}));});
+test('arbitrary labels and empty documents are valid',()=>{const p=page('90');p.sections[0].heading='DOG';p.sections[0].groups[0].items[0].label='Vet';assert.equal(validateDocument(p),p);assert.doesNotThrow(()=>validateDocument({title:'',titleRegion:{x:0,y:0,width:0,height:0},sections:[]}));});
 test('malformed structures, semantics and excessive items rejected',()=>{for(const p of [{title:'x'}, {title:'x',sections:[null]},page('bad')])assert.throws(()=>validateDocument(p));const p=page('1');p.sections[0].semanticKind='invented';assert.throws(()=>validateDocument(p));const q=page('1');q.sections[0].groups[0].items=Array(201).fill(q.sections[0].groups[0].items[0]);assert.throws(()=>validateDocument(q));});
 test('unanimous consensus',()=>{const result=mergeAlignedPasses([page('420'),page('420'),page('420')]);assert.equal(result.needsAdjudication,false);assert.equal(result.disagreements.length,0);});
 test('equivalent normalized money agrees',()=>assert.equal(mergeAlignedPasses([page('420'),page('420.0'),page('420.00')]).disagreements.length,0));
 test('majority chooses two matching amounts',()=>{const r=mergeAlignedPasses([page('410'),page('420'),page('420')]);assert.equal(r.document.sections[0].groups[0].items[0].amount,'420');assert.equal(r.disagreements.length,1);assert.equal(r.needsAdjudication,false);});
 test('three-way disagreement requires adjudication',()=>assert.equal(mergeAlignedPasses([page('410'),page('420'),page('470')]).needsAdjudication,true));
 test('material structural mismatch requires adjudication',()=>{const p=page('420');p.sections[0].groups[0].items[0].label='Side gig';assert.equal(mergeAlignedPasses([page('420'),page('420'),p]).disagreements[0].path,'__document_structure__');});
-test('case whitespace punctuation and reordered rows align without altering displayed labels',()=>{const a=page('420');a.sections[0].groups[0].items.push({label:'Side gig',amount:'100',semanticKind:'income'});const b=clone(a);b.sections[0].heading='  INCOME! ';b.sections[0].groups[0].items.reverse();const r=mergeAlignedPasses([a,b,clone(a)]);assert.equal(r.needsAdjudication,false);assert.equal(r.document.sections[0].heading,'Income');});
+test('case whitespace punctuation and reordered rows align without altering displayed labels',()=>{const a=page('420');a.sections[0].groups[0].items.push({label:'Side gig',amount:'100',semanticKind:'income',amountRegion:{x:650,y:350,width:100,height:40}});const b=clone(a);b.sections[0].heading='  INCOME! ';b.sections[0].groups[0].items.reverse();const r=mergeAlignedPasses([a,b,clone(a)]);assert.equal(r.needsAdjudication,false);assert.equal(r.document.sections[0].heading,'Income');});
 test('ambiguous duplicate paths require image adjudication',()=>{const p=page('1');p.sections[0].groups[0].items.push(clone(p.sections[0].groups[0].items[0]));assert.equal(mergeAlignedPasses([p,p,p]).needsAdjudication,true);});
 test('refusal incomplete malformed and missing output are rejected',()=>{for(const r of [{status:'incomplete',output_text:'{}'},{status:'completed',output_text:'bad'},{status:'completed'},{status:'completed',output_text:JSON.stringify(page('1')),output:[{content:[{type:'refusal'}]}]}])assert.throws(()=>decodeModelResponse(r));});
 test('three independent reads retain prompt store:false and strict schema',async()=>{const client=fakeClient([page('420')]);const r=await recognizePage({client,model:'gpt-5.6',request});assert.equal(client.calls.length,3);assert.equal(r.consensus.strategy,'unanimous');assert.equal(r.provenance.passCount,3);assert.equal(r.provenance.model,'actual-model-id');for(const {body} of client.calls){assert.equal(body.store,false);assert.equal(body.text.format.strict,true);assert.ok(body.input[0].content.some(c=>c.text===MASTER_PROMPT));}});
@@ -225,3 +225,42 @@ test(
         );
     }
 );
+
+
+test('v2 requires positive amount regions and visible-title regions', () => {
+    for (const bad of [undefined, null, {x:0,y:0,width:0,height:10}, {x:0,y:0,width:10,height:0}, {x:0,y:0,width:0,height:0}]) {
+        for (const target of ['title', 'amount']) {
+            const p = page('420');
+            if (target === 'title') p.titleRegion = bad;
+            else p.sections[0].groups[0].items[0].amountRegion = bad;
+            assert.throws(() => validateDocument(p));
+        }
+    }
+});
+test('empty title permits zero region; edge rectangles must stay in bounds', () => {
+    const p = page('420'); p.title = '  '; p.titleRegion = {x:0,y:0,width:0,height:0};
+    p.sections[0].groups[0].items[0].amountRegion = {x:0,y:0,width:1000,height:1000};
+    assert.doesNotThrow(() => validateDocument(p));
+    for (const bad of [{x:950,y:0,width:50.1,height:1},{x:0,y:999,width:1,height:1.1},{x:-1,y:0,width:1,height:1},{x:0,y:0,width:NaN,height:1}]) {
+        p.sections[0].groups[0].items[0].amountRegion = bad;
+        assert.throws(() => validateDocument(p));
+    }
+});
+test('handler refuses missing region metadata instead of publishing unusable v2', async () => {
+    const p = page('420'); delete p.sections[0].groups[0].items[0].amountRegion;
+    const res = response();
+    await createHandler({clientProvider:()=>fakeClient([p]),rateLimit:()=>false})({method:'POST',body:request},res);
+    assert.equal(res.code,502); assert.equal(res.body.code,'invalid_document');
+});
+
+
+test('opt-in integration assertion catches old provenance, absent regions and incorrect values offline', async () => {
+    const {assertV2Integration} = await import('../scripts/assert-v2-integration.mjs');
+    const result = {document:page('420'),provenance:{promptVersion:'whole-page-v2',schemaVersion:'financial-document-v2'}};
+    assert.doesNotThrow(() => assertV2Integration(result,['420']));
+    const old = clone(result); old.provenance.schemaVersion = 'financial-document-v1';
+    assert.throws(() => assertV2Integration(old,['420']));
+    const missing = clone(result); delete missing.document.sections[0].groups[0].items[0].amountRegion;
+    assert.throws(() => assertV2Integration(missing,['420']));
+    assert.throws(() => assertV2Integration(result,['185']));
+});
