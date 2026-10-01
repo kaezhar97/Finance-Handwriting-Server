@@ -7,50 +7,14 @@ import { createHandler } from '../api/recognize.js';
 import { MASTER_PROMPT } from '../lib/prompt.js';
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/n6kAAAAASUVORK5CYII=';
 const page = amount => ({
-    title: 'January 2027',
-
-    titleRegion: {
-        x: 350,
-        y: 40,
-        width: 300,
-        height: 80
-    },
-
-    sections: [
-        {
-            heading: 'Income',
-            semanticKind: 'income',
-
-            groups: [
-                {
-                    name: '',
-
-                    items: [
-                        {
-                            label: 'Salary',
-                            amount,
-
-                            amountRegion: {
-                                x: 650,
-                                y: 250,
-                                width: 150,
-                                height: 60
-                            },
-
-                            semanticKind:
-                                'income'
-                        }
-                    ]
-                }
-            ]
-        }
-    ]
+    title: 'January 2027', titleRegion: {x:350,y:40,width:300,height:80},
+    categories: [{name:'Income', fields:[{label:'Salary',amount,amountRegion:{x:650,y:250,width:150,height:60}}]}]
 });
 const clone = value => structuredClone(value);
 const request = {imageBase64:png};
 function fakeClient(documents) { const calls=[];return { calls, responses:{create:async(body,options)=>{calls.push({body,options});return {status:'completed',model:'actual-model-id',output_text:JSON.stringify(documents[calls.length-1] ?? documents[0])};}} }; }
 const response = () => ({headers:{},setHeader(k,v){this.headers[k]=v;},status(v){this.code=v;return this;},json(v){this.body=v;return this;}});
-test('request accepts complete PNG and explicit v1 version',()=>assert.equal(validateRequest({...request,schemaVersion:'whole-page-request-v1'}).imageBase64,png));
+test('request accepts complete PNG and explicit v2 version',()=>assert.equal(validateRequest({...request,schemaVersion:'whole-page-request-v2'}).imageBase64,png));
 test('reject missing, malformed, oversized and unsupported image inputs',()=>{for(const body of [{}, {imageBase64:'abc'}, {imageBase64:'A'.repeat(3_000_004)}, {...request,schemaVersion:'v9'}, 'not json',null])assert.throws(()=>validateRequest(body));});
 test('reject total payload over limit',()=>assert.throws(()=>validateRequest({...request,unused:'x'.repeat(4_000_000)})));
 test('reject image dimension bombs',()=>{const data=Buffer.from(png,'base64');data.writeUInt32BE(20000,16);assert.throws(()=>validateRequest({imageBase64:data.toString('base64')}));});
@@ -58,18 +22,18 @@ test('profile is bounded and reduced to explicit correction fields',()=>{const p
 test('reference optional and validated',()=>{assert.equal(validateRequest({...request,handwritingReferenceBase64:png}).handwritingReferenceBase64,png);assert.throws(()=>validateRequest({...request,handwritingReferenceBase64:'bad'}));});
 test('amounts preserve zero, decimals, negatives, trailing zero and long balance',()=>{for(const v of ['0','-35.42','8500','1000.00','208300','999999999999.99'])assert.equal(validateAmount(v),true);});
 test('invalid amounts are rejected without cleanup',()=>{for(const v of ['1,000','1000 1000','1.234','1e4','NaN','1000000000000','',null])assert.equal(validateAmount(v),false);});
-test('arbitrary labels and empty documents are valid',()=>{const p=page('90');p.sections[0].heading='DOG';p.sections[0].groups[0].items[0].label='Vet';assert.equal(validateDocument(p),p);assert.doesNotThrow(()=>validateDocument({title:'',titleRegion:{x:0,y:0,width:0,height:0},sections:[]}));});
-test('malformed structures, semantics and excessive items rejected',()=>{for(const p of [{title:'x'}, {title:'x',sections:[null]},page('bad')])assert.throws(()=>validateDocument(p));const p=page('1');p.sections[0].semanticKind='invented';assert.throws(()=>validateDocument(p));const q=page('1');q.sections[0].groups[0].items=Array(201).fill(q.sections[0].groups[0].items[0]);assert.throws(()=>validateDocument(q));});
+test('arbitrary labels and empty documents are valid',()=>{const p=page('90');p.categories[0].name='DOG';p.categories[0].fields[0].label='Vet';assert.equal(validateDocument(p),p);assert.doesNotThrow(()=>validateDocument({title:'',titleRegion:{x:0,y:0,width:0,height:0},categories:[]}));});
+test('malformed structures, semantics and excessive items rejected',()=>{for(const p of [{title:'x'}, {title:'x',categories:[null]},page('bad')])assert.throws(()=>validateDocument(p));const p=page('1');p.categories[0].classification='invented';assert.throws(()=>validateDocument(p));const q=page('1');q.categories[0].fields=Array(201).fill(q.categories[0].fields[0]);assert.throws(()=>validateDocument(q));});
 test('unanimous consensus',()=>{const result=mergeAlignedPasses([page('420'),page('420'),page('420')]);assert.equal(result.needsAdjudication,false);assert.equal(result.disagreements.length,0);});
 test('equivalent normalized money agrees',()=>assert.equal(mergeAlignedPasses([page('420'),page('420.0'),page('420.00')]).disagreements.length,0));
-test('majority chooses two matching amounts',()=>{const r=mergeAlignedPasses([page('410'),page('420'),page('420')]);assert.equal(r.document.sections[0].groups[0].items[0].amount,'420');assert.equal(r.disagreements.length,1);assert.equal(r.needsAdjudication,false);});
+test('majority chooses two matching amounts',()=>{const r=mergeAlignedPasses([page('410'),page('420'),page('420')]);assert.equal(r.document.categories[0].fields[0].amount,'420');assert.equal(r.disagreements.length,1);assert.equal(r.needsAdjudication,false);});
 test('three-way disagreement requires adjudication',()=>assert.equal(mergeAlignedPasses([page('410'),page('420'),page('470')]).needsAdjudication,true));
-test('material structural mismatch requires adjudication',()=>{const p=page('420');p.sections[0].groups[0].items[0].label='Side gig';assert.equal(mergeAlignedPasses([page('420'),page('420'),p]).disagreements[0].path,'__document_structure__');});
-test('case whitespace punctuation and reordered rows align without altering displayed labels',()=>{const a=page('420');a.sections[0].groups[0].items.push({label:'Side gig',amount:'100',semanticKind:'income',amountRegion:{x:650,y:350,width:100,height:40}});const b=clone(a);b.sections[0].heading='  INCOME! ';b.sections[0].groups[0].items.reverse();const r=mergeAlignedPasses([a,b,clone(a)]);assert.equal(r.needsAdjudication,false);assert.equal(r.document.sections[0].heading,'Income');});
-test('ambiguous duplicate paths require image adjudication',()=>{const p=page('1');p.sections[0].groups[0].items.push(clone(p.sections[0].groups[0].items[0]));assert.equal(mergeAlignedPasses([p,p,p]).needsAdjudication,true);});
+test('material structural mismatch requires adjudication',()=>{const p=page('420');p.categories[0].fields[0].label='Side gig';assert.equal(mergeAlignedPasses([page('420'),page('420'),p]).disagreements[0].path,'__document_structure__');});
+test('case whitespace punctuation and reordered rows align without altering displayed labels',()=>{const a=page('420');a.categories[0].fields.push({label:'Side gig',amount:'100',amountRegion:{x:650,y:350,width:100,height:40}});const b=clone(a);b.categories[0].name='  INCOME! ';b.categories[0].fields.reverse();const r=mergeAlignedPasses([a,b,clone(a)]);assert.equal(r.needsAdjudication,false);assert.equal(r.document.categories[0].name,'Income');});
+test('ambiguous duplicate paths require image adjudication',()=>{const p=page('1');p.categories[0].fields.push(clone(p.categories[0].fields[0]));assert.equal(mergeAlignedPasses([p,p,p]).needsAdjudication,true);});
 test('refusal incomplete malformed and missing output are rejected',()=>{for(const r of [{status:'incomplete',output_text:'{}'},{status:'completed',output_text:'bad'},{status:'completed'},{status:'completed',output_text:JSON.stringify(page('1')),output:[{content:[{type:'refusal'}]}]}])assert.throws(()=>decodeModelResponse(r));});
 test('three independent reads retain prompt store:false and strict schema',async()=>{const client=fakeClient([page('420')]);const r=await recognizePage({client,model:'gpt-5.6',request});assert.equal(client.calls.length,3);assert.equal(r.consensus.strategy,'unanimous');assert.equal(r.provenance.passCount,3);assert.equal(r.provenance.model,'actual-model-id');for(const {body} of client.calls){assert.equal(body.store,false);assert.equal(body.text.format.strict,true);assert.ok(body.input[0].content.some(c=>c.text===MASTER_PROMPT));}});
-test('fourth read sees original image plus three candidates and returns provenance',async()=>{const client=fakeClient([page('1'),page('2'),page('3'),page('420')]);const r=await recognizePage({client,model:'gpt-5.6',request});assert.equal(client.calls.length,4);assert.equal(r.consensus.strategy,'adjudicated');assert.equal(r.provenance.passCount,4);assert.equal(r.document.sections[0].groups[0].items[0].amount,'420');assert.ok(client.calls[3].body.input[0].content.some(c=>c.type==='input_image'));assert.match(client.calls[3].body.input[0].content[0].text,/Candidate pass 3/);});
+test('fourth read sees original image plus three candidates and returns provenance',async()=>{const client=fakeClient([page('1'),page('2'),page('3'),page('420')]);const r=await recognizePage({client,model:'gpt-5.6',request});assert.equal(client.calls.length,4);assert.equal(r.consensus.strategy,'adjudicated');assert.equal(r.provenance.passCount,4);assert.equal(r.document.categories[0].fields[0].amount,'420');assert.ok(client.calls[3].body.input[0].content.some(c=>c.type==='input_image'));assert.match(client.calls[3].body.input[0].content[0].text,/Candidate pass 3/);});
 test('reference image carries glyph-only instructions',()=>{const c=buildImageContent({...request,handwritingReferenceBase64:png});assert.equal(c.filter(c=>c.type==='input_image').length,2);assert.match(c[2].text,/ONLY/);});
 test('rate limit expires and bounds bursts',()=>{let now=0;const limit=createRateLimiter({now:()=>now,maximum:2});assert.equal(limit('a'),false);assert.equal(limit('a'),false);assert.equal(limit('a'),true);now=60000;assert.equal(limit('a'),false);});
 test('health does not need credentials or call OpenAI',async()=>{const res=response();await createHandler({clientProvider:()=>{throw Error('must not call');}})({method:'GET'},res);assert.equal(res.code,200);assert.equal(res.body.mode,'whole-page-consensus');});
@@ -105,52 +69,27 @@ test(
         assert.equal(
             res.body.provenance
                 .schemaVersion,
-            'financial-document-v2'
+            'financial-document-v3'
         );
 
         assert.equal(
             res.body.provenance
                 .promptVersion,
-            'whole-page-v2'
+            'whole-page-v3'
         );
     }
 );
 test('handler maps upstream limit without leaking error bodies',async()=>{const res=response();await createHandler({clientProvider:()=>({responses:{create:async()=>{throw Object.assign(new Error('secret image'),{status:429});}}}),rateLimit:()=>false})({method:'POST',body:request},res);assert.equal(res.code,429);assert.doesNotMatch(JSON.stringify(res.body),/secret/);});
 test('handler aborts timed-out reads',async()=>{const res=response();const client={responses:{create:async(_, {signal})=>new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(Object.assign(new Error('timeout'),{name:'AbortError'})),{once:true}))}};await createHandler({clientProvider:()=>client,timeoutMs:5,rateLimit:()=>false})({method:'POST',body:request},res);assert.equal(res.code,504);});
-test(
-    'new asset and liability semantic kinds are accepted',
-    () => {
-        const asset =
-            page('12000');
-
-        asset.sections[0]
-            .groups[0]
-            .items[0]
-            .semanticKind =
-                'asset_balance';
-
-        assert.equal(
-            validateDocument(asset),
-            asset
-        );
-
-        const liability =
-            page('285000');
-
-        liability.sections[0]
-            .groups[0]
-            .items[0]
-            .semanticKind =
-                'liability_balance';
-
-        assert.equal(
-            validateDocument(
-                liability
-            ),
-            liability
-        );
+test('schema never exposes classification, presentation preferences or an intermediate hierarchy', async () => {
+    const {financialDocumentSchema} = await import('../lib/prompt.js');
+    assert.doesNotMatch(JSON.stringify(financialDocumentSchema), /semanticKind|classification|groups|accounts|showCategoryReport/);
+    assert.match(MASTER_PROMPT, /Never infer Income or Expense/);
+    for (const extra of ['classification','semanticKind','groups','showCategoryReport']) {
+        const p = page('1'); p.categories[0][extra] = 'income'; assert.throws(() => validateDocument(p));
     }
-);
+    const p = page('1'); p.categories[0].fields[0].semanticKind = 'income'; assert.throws(() => validateDocument(p));
+});
 
 test(
     'invalid normalized regions are rejected',
@@ -158,9 +97,7 @@ test(
         const invalid =
             page('420');
 
-        invalid.sections[0]
-            .groups[0]
-            .items[0]
+        invalid.categories[0].fields[0]
             .amountRegion =
                 {
                     x: 950,
@@ -190,21 +127,15 @@ test(
         const third =
             page('420');
 
-        first.sections[0]
-            .groups[0]
-            .items[0]
+        first.categories[0].fields[0]
             .amountRegion.x =
                 600;
 
-        second.sections[0]
-            .groups[0]
-            .items[0]
+        second.categories[0].fields[0]
             .amountRegion.x =
                 650;
 
-        third.sections[0]
-            .groups[0]
-            .items[0]
+        third.categories[0].fields[0]
             .amountRegion.x =
                 700;
 
@@ -217,9 +148,7 @@ test(
 
         assert.equal(
             result.document
-                .sections[0]
-                .groups[0]
-                .items[0]
+                .categories[0].fields[0]
                 .amountRegion.x,
             650
         );
@@ -227,27 +156,27 @@ test(
 );
 
 
-test('v2 requires positive amount regions and visible-title regions', () => {
+test('v3 requires positive amount regions and visible-title regions', () => {
     for (const bad of [undefined, null, {x:0,y:0,width:0,height:10}, {x:0,y:0,width:10,height:0}, {x:0,y:0,width:0,height:0}]) {
         for (const target of ['title', 'amount']) {
             const p = page('420');
             if (target === 'title') p.titleRegion = bad;
-            else p.sections[0].groups[0].items[0].amountRegion = bad;
+            else p.categories[0].fields[0].amountRegion = bad;
             assert.throws(() => validateDocument(p));
         }
     }
 });
 test('empty title permits zero region; edge rectangles must stay in bounds', () => {
     const p = page('420'); p.title = '  '; p.titleRegion = {x:0,y:0,width:0,height:0};
-    p.sections[0].groups[0].items[0].amountRegion = {x:0,y:0,width:1000,height:1000};
+    p.categories[0].fields[0].amountRegion = {x:0,y:0,width:1000,height:1000};
     assert.doesNotThrow(() => validateDocument(p));
     for (const bad of [{x:950,y:0,width:50.1,height:1},{x:0,y:999,width:1,height:1.1},{x:-1,y:0,width:1,height:1},{x:0,y:0,width:NaN,height:1}]) {
-        p.sections[0].groups[0].items[0].amountRegion = bad;
+        p.categories[0].fields[0].amountRegion = bad;
         assert.throws(() => validateDocument(p));
     }
 });
-test('handler refuses missing region metadata instead of publishing unusable v2', async () => {
-    const p = page('420'); delete p.sections[0].groups[0].items[0].amountRegion;
+test('handler refuses missing region metadata instead of publishing unusable v3', async () => {
+    const p = page('420'); delete p.categories[0].fields[0].amountRegion;
     const res = response();
     await createHandler({clientProvider:()=>fakeClient([p]),rateLimit:()=>false})({method:'POST',body:request},res);
     assert.equal(res.code,502); assert.equal(res.body.code,'invalid_document');
@@ -255,12 +184,12 @@ test('handler refuses missing region metadata instead of publishing unusable v2'
 
 
 test('opt-in integration assertion catches old provenance, absent regions and incorrect values offline', async () => {
-    const {assertV2Integration} = await import('../scripts/assert-v2-integration.mjs');
-    const result = {document:page('420'),provenance:{promptVersion:'whole-page-v2',schemaVersion:'financial-document-v2'}};
-    assert.doesNotThrow(() => assertV2Integration(result,['420']));
+    const {assertV3Integration} = await import('../scripts/assert-v3-integration.mjs');
+    const result = {document:page('420'),provenance:{promptVersion:'whole-page-v3',schemaVersion:'financial-document-v3'}};
+    assert.doesNotThrow(() => assertV3Integration(result,['420']));
     const old = clone(result); old.provenance.schemaVersion = 'financial-document-v1';
-    assert.throws(() => assertV2Integration(old,['420']));
-    const missing = clone(result); delete missing.document.sections[0].groups[0].items[0].amountRegion;
-    assert.throws(() => assertV2Integration(missing,['420']));
-    assert.throws(() => assertV2Integration(result,['185']));
+    assert.throws(() => assertV3Integration(old,['420']));
+    const missing = clone(result); delete missing.document.categories[0].fields[0].amountRegion;
+    assert.throws(() => assertV3Integration(missing,['420']));
+    assert.throws(() => assertV3Integration(result,['185']));
 });
